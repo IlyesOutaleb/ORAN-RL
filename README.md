@@ -2,7 +2,10 @@
 
 This implementation has 12 UEs with 4 gNBs in a grid of 1000 by 1000 meters.
 
-It is OpenAI GYM compliant. There are three components. 
+It is OpenAI GYM compliant. There are three components. These can be found visually inside the PythonCodeArchitecture.png
+
+<img width="711" height="554" alt="image" src="https://github.com/user-attachments/assets/76839816-13b2-4aa2-b686-97f8bdda1bec" />
+
 
 TrafficSteering.py is a simulated 5G network environment. It can be used to RL models for traffic steering purposes.
 

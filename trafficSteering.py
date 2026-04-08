@@ -15,10 +15,14 @@ class TraffciSteeringEnv(gym.Env): # class that defines RL enviornment for traff
         influence on results. Also see size of network maybe smaller and larger and see effets
         """
         self._size_of_network = 1000 # Max distance a box of 1000x1000 meters
+        self._min_throughput_ue = 318 # from matlab calculation
+        self._max_throughput_ue = 718 # from matlab calculation
         self._num_gnbs = 4
-        self._num_ue = 5
+        self._num_ue = 12
         self._max_steps = 200
-        self._ho_cost = 0.3
+        self._ho_cost = 0.0025
+        self._ho_delta = 0.1
+        self._last_ho_step_num = 0
         self._frequency = 3.5e9 # carrier frequency c band in Hz
         self._power_transmitted = 44 # power transmitted by BS in dBm
         self._gain_transmitted = 8 # antenna gain of BS in dBi
@@ -44,10 +48,18 @@ class TraffciSteeringEnv(gym.Env): # class that defines RL enviornment for traff
         obsLow = np.concatenate([throughputMinPerUe, minLoad])
         obsHigh = np.concatenate([throughputMaxPerUe, maxLoad])
 
+        """ CHANGE FOR NORMALIZATION """
+        obsLow = np.zeros(self._num_ue + self._num_gnbs)
+        obsHigh = np.ones(self._num_ue + self._num_gnbs)
+        """ FOR MORE OBSERVATIONS """
+        obsLow = np.zeros(self._num_ue*self._num_gnbs + self._num_gnbs)
+        obsHigh = np.ones(self._num_ue*self._num_gnbs + self._num_gnbs)
+
         self.observation_space = gym.spaces.Box(low=obsLow, high=obsHigh)
 
         # Action Space
         possibleActions = [self._num_gnbs + 1] * self._num_ue # steer to all possible gnbs + 1 (NOOP) and that for all UEs
+        #possibleActions = [self._num_gnbs] * self._num_ue
         self.action_space = gym.spaces.MultiDiscrete(possibleActions)
 
         # Values used for calculations and decision making
@@ -56,6 +68,7 @@ class TraffciSteeringEnv(gym.Env): # class that defines RL enviornment for traff
         self._assignment = None # (NUM_UE) assignment/BS number for each UE
         self._ue_pos = None # (NUM_UE, 2) 2D position for each UE in meters
         self._step_count = 0 # A number to keep track/simulate time. Works with self_max_steps
+        self._last_ho_step_num = None # (NUM_UE, 1) showing when the ue last did a HO
         self._distance = None# (NUM_UE, NUM_BS) distance in meters for each scenario. Needed for display purposes
         self._gnb_pos = np.array([
             [250, 250],
@@ -101,7 +114,12 @@ class TraffciSteeringEnv(gym.Env): # class that defines RL enviornment for traff
                 snr = 10**(snr/10)
 
                 # get throughput in Mega bits per second using shannon capacity theorem
-                self._throughput[ue, gnb] = self._bandwidth * np.log2(1+snr)/(1e6) # variable to now be used
+                totalCapacity = self._bandwidth * np.log2(1+snr)/(1e6)
+                numberOfUes = int(self.compute_ues_per_cell(self._assignment)[gnb])
+                if self._assignment[ue] == gnb: # if you are already there then just count yourself in no + 1
+                    self._throughput[ue, gnb] = totalCapacity/(numberOfUes) # linear distribution of resources
+                else:   # if you are not there. Need to consider if you were to attach yourself + 1
+                    self._throughput[ue, gnb] = totalCapacity / (numberOfUes + 1)
         return
 
     def compute_ues_per_cell(self, assignment):
@@ -120,7 +138,16 @@ class TraffciSteeringEnv(gym.Env): # class that defines RL enviornment for traff
         A methods that returns the observation of the agent which will be the state of the environment
         :return: A vector of size (numUEs + numBS, 1) Making it UE and BS centric. Unlike paper which is UE centric
         """
-        return np.concatenate([self._throughput[range(self._num_ue), self._assignment], self.compute_ues_per_cell(self._assignment)])
+        #minThroughput = self._min_throughput_ue/self._num_ue
+        #throughputRange = self._max_throughput_ue-minThroughput
+        #normalizedThroughput = (self._throughput[range(self._num_ue), self._assignment] - minThroughput)/(throughputRange)
+
+        normalizedDistance = (self._distance.flatten() - 0)/ (1100 - 0)
+
+        normalizedLoad = self.compute_ues_per_cell(self._assignment)/ (self._num_ue)
+
+        return np.concatenate([normalizedDistance, normalizedLoad])
+        #return np.concatenate([self._throughput[range(self._num_ue), self._assignment], self.compute_ues_per_cell(self._assignment)])
 
 
     def compute_reward_function(self, oldThroughput, newThroughput, oldAssignment, newAssignment):
@@ -146,19 +173,27 @@ class TraffciSteeringEnv(gym.Env): # class that defines RL enviornment for traff
         :return: reward & number of handovers for info purposes
         """
         numHO = 0
-        rNew = 0.0
-        #rOld = 0.0
+        reward = 0.0
+        rOld = 0.0
         epsilon = 1e-6
+        timeSinceLastHoForUe = 0
+        hoCost = 0.0
 
         # Compute reward per UE and aggregrate & get num HO
         for ue in range(self._num_ue):
-            rNew += np.log2(newThroughput[ue] + epsilon)
-            #rOld += np.log2(oldThroughput[ue] + epsilon)
             if newAssignment[ue] != oldAssignment[ue]: # there is a HO as it changed
                 numHO += 1
-        
-        #return rNew - rOld - numHO*self._ho_cost, numHO
-        return rNew- numHO*self._ho_cost, numHO
+                timeSinceLastHoForUe = self._step_count - self._last_ho_step_num[ue]
+                hoCost = self._ho_cost * np.exp(-self._ho_delta * timeSinceLastHoForUe)
+                self._last_ho_step_num[ue] = self._step_count
+            else:
+                hoCost = 0
+            reward += (np.log2(newThroughput[ue] + epsilon) - (np.log2(oldThroughput[ue] + epsilon)) - hoCost)
+            #reward += (np.log2(newThroughput[ue] + epsilon) - hoCost)
+
+            # TODO: Tweak the reward function to give more weight to the HO
+
+        return reward, numHO
 
 
     def reset(self, seed=None):
@@ -174,6 +209,7 @@ class TraffciSteeringEnv(gym.Env): # class that defines RL enviornment for traff
         self._step_count = 0
         self._throughput = np.zeros((self._num_ue, self._num_gnbs))
         self._distance = np.zeros((self._num_ue, self._num_gnbs))
+        self._last_ho_step_num = np.zeros(self._num_ue)
 
         # Starting distribution use a uniform distribution accross grid to place UEs
         # TODO: add a Poisson distribution to add random entrance and exit of UEs
@@ -220,8 +256,8 @@ class TraffciSteeringEnv(gym.Env): # class that defines RL enviornment for traff
         """
 
         # initialize action var & make sure valid in case RL agent sends something wrong
-        action = np.array(action)
-        print(f"action: {action}")
+        #action = np.array(action)
+        print(f"action: {action}") # speed up training
         assert self.action_space.contains(action), f"Invalid action: {action}"
 
         # store prev state (better to use copy as numpy arrays are mutable and hence can be modified by this mutation)
@@ -322,23 +358,31 @@ class TraffciSteeringEnv(gym.Env): # class that defines RL enviornment for traff
             terminal.append(fillTableInfo)
 
 
-            """ Second table for BS centric """
-            secondTableBSCentricHeader = f"\n {'Cell':>5} {'UEs':>5}"
-            terminal.append(secondTableBSCentricHeader)
+        """ Second table for BS centric """
+        secondTableBSCentricHeader = f"\n {'Cell':>5} {'UEs':>5}"
+        terminal.append(secondTableBSCentricHeader)
 
-            header2Seperation = "-" * 15
-            terminal.append(header2Seperation)
+        header2Seperation = "-" * 15
+        terminal.append(header2Seperation)
 
-            # print info for second table gnb centric
-            for gnb in range(self._num_gnbs):
-                numUes = int(uePerCell[gnb])
-                fillTable2Info = f" gNB-{gnb} {numUes:>5}"
-                terminal.append(fillTable2Info)
+        # print info for second table gnb centric
+        for gnb in range(self._num_gnbs):
+            numUes = int(uePerCell[gnb])
+            fillTable2Info = f" gNB-{gnb} {numUes:>5}"
+            terminal.append(fillTable2Info)
 
-            output = "\n".join(terminal) + "\n"
-            print(output)
-            return output
+        output = "\n".join(terminal) + "\n"
+        #print(output)
+        #print(self._ue_pos)
+        return output
 
+    def getThroughputPerStep(self):
+        totalThroughput = 0.0
+        for ue in range(self._num_ue):
+            gnb = self._assignment[ue]
+            throughput = self._throughput[ue, gnb]
+            totalThroughput += throughput
+        return totalThroughput
 
     def close(self):
         """
@@ -348,10 +392,6 @@ class TraffciSteeringEnv(gym.Env): # class that defines RL enviornment for traff
 
 
     """     END OF CLASS TRAFFIC STEERING       """
-
-
-
-
 
 def greedy_distance_policy(env):
     """ Will return the action vector that will steer the UE to closest BS which is a baseline policy

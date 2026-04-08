@@ -1,4 +1,4 @@
-*** OPEN AI *** 
+ *OPEN AI* 
 
 This implementation has 12 UEs with 4 gNBs in a grid of 1000 by 1000 meters.
 

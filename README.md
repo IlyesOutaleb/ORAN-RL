@@ -1,3 +1,5 @@
+*** OPEN AI *** 
+
 This implementation has 12 UEs with 4 gNBs in a grid of 1000 by 1000 meters.
 
 It is OpenAI GYM compliant. There are three components. 

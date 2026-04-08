@@ -22,3 +22,5 @@ Tensorboard is GUI provided by stablebaselines3 (SB3) to visualize how well the 
 Here is the full SB3 documentation for more details:
 
 https://stable-baselines3.readthedocs.io/en/master/
+
+Finally, there are two matlab scripts to calculate throughput based on distance away from the gNB. RLThroughputCalc contains info on the current setup and RLThroughputNTN contains info for a possible extension for a LEO satellite acting as a base station. This was done as understanding the reward function is important in RL and it is heavy reliant on the throughput.
